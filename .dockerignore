@@ -1,0 +1,9 @@
+# See DEPLOYMENT.md for full details
+node_modules
+dist
+.git
+*.log
+logs/
+.replit
+replit.nix
+.local/
