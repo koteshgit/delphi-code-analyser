@@ -34,7 +34,7 @@ services:
   app:
     build:
       context: .
-      dockerfile: server/Dockerfile
+      dockerfile: Dockerfile
     restart: unless-stopped
     depends_on:
       postgres:
@@ -45,7 +45,9 @@ services:
       - "5000:5000"
     environment:
       DATABASE_URL: postgresql://delphi:delphi_secret@postgres:5432/delphi_analyser
-      REDIS_URL: redis://redis:6379
+      # Redis — app uses REDIS_HOST/REDIS_PORT, not REDIS_URL
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
       SESSION_SECRET: change-this-to-a-random-string
       NODE_ENV: production
       PORT: "5000"

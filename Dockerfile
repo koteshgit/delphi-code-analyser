@@ -1,11 +1,42 @@
 # ============================================================
-# Stage 1: Build the Node.js application
+# Stage 1: Compile DelphiAST CLI from Pascal source
+# Free Pascal Compiler (fpc) is available for amd64 AND arm64
+# in Debian repos, so this stage produces the correct binary
+# for whatever platform docker buildx targets.
+# ============================================================
+FROM debian:bookworm-slim AS fpc-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    fpc \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy Pascal source library and CLI entry point
+COPY delphiast/Source/ ./delphiast/Source/
+COPY python/parser/delphiast_cli.lpr ./
+
+# Compile natively for the target architecture.
+# -Mdelphi sets Delphi compatibility mode for ALL units (not just the .lpr),
+# which is required because the SimpleParser units use Delphi conventions
+# (lowercase 'result', etc.) without their own {$MODE} directive.
+RUN fpc \
+    -Mdelphi \
+    -Fu./delphiast/Source \
+    -Fu./delphiast/Source/SimpleParser \
+    -Fu./delphiast/Source/FreePascalSupport \
+    -Fu./delphiast/Source/FreePascalSupport/FPC_StringBuilder \
+    -Fi./delphiast/Source/SimpleParser \
+    -o./delphiast_cli \
+    ./delphiast_cli.lpr
+
+# ============================================================
+# Stage 2: Build the Node.js application
 # ============================================================
 FROM node:20-bookworm AS builder
 
 WORKDIR /app
 
-# Install system deps for native modules
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv git \
     && rm -rf /var/lib/apt/lists/*
@@ -17,51 +48,55 @@ COPY . .
 RUN npm run build
 
 # ============================================================
-# Stage 2: Production image
+# Stage 3: Production image
 # ============================================================
 FROM node:20-bookworm-slim AS production
 
 WORKDIR /app
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv \
     git ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create Python virtual environment and install deps
+# Python virtual environment
 RUN python3 -m venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir psycopg2-binary anthropic
 
-# Copy built application from builder stage
+# Node application
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# Copy Python agents and parser
+# Config files needed for drizzle-kit schema push at startup
+COPY --from=builder /app/drizzle.config.ts ./
+COPY --from=builder /app/tsconfig.json ./
+
+# Python pipeline and shared schema
 COPY python/ ./python/
 COPY shared/ ./shared/
 
-# Copy the compiled DelphiAST binary (x86_64 Linux)
-# If targeting ARM64, you will need to recompile — see Troubleshooting
-COPY python/parser/delphiast_cli ./python/parser/delphiast_cli
-RUN chmod +x ./python/parser/delphiast_cli || true
+# Overwrite the platform-specific pre-compiled binary with the
+# natively compiled one from Stage 1
+COPY --from=fpc-builder /build/delphiast_cli ./python/parser/delphiast_cli
+RUN chmod +x ./python/parser/delphiast_cli
 
-# Create necessary directories
+# Persistent storage dirs
 RUN mkdir -p /tmp/repos /tmp/uploads /app/logs/parser
 
-# Expose the application port
+# Entrypoint: runs DB migration then starts the app
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
+
 EXPOSE 5000
 
-# Environment defaults
 ENV NODE_ENV=production
 ENV PORT=5000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Give extra time for migrations on first boot
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
     CMD curl -f http://localhost:5000/api/projects || exit 1
 
-# Start the application
-CMD ["node", "dist/index.cjs"]
+ENTRYPOINT ["./entrypoint.sh"]

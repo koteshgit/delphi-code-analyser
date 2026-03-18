@@ -1,9 +1,23 @@
-# See DEPLOYMENT.md for full details
+# Build artifacts
 node_modules
 dist
+
+# Version control
 .git
+
+# Logs
 *.log
 logs/
+
+# Replit-specific files
 .replit
 replit.nix
 .local/
+
+# Pre-compiled platform-specific binary — rebuilt from source in Stage 1
+python/parser/delphiast_cli
+python/parser/*.ppu
+python/parser/*.o
+
+# Environment secrets — pass via docker-compose or runtime env
+.env
